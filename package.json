@@ -1,0 +1,44 @@
+{
+  "name": "@carrot/atlassian-codemode",
+  "version": "0.1.0",
+  "description": "Atlassian Code Mode MCP Server — 2 tools instead of 20+, 90-98% token savings",
+  "type": "module",
+  "bin": {
+    "atlassian-codemode": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "process-specs": "tsx scripts/process-specs.ts",
+    "benchmark": "tsx scripts/benchmark.ts"
+  },
+  "dependencies": {
+    "@apidevtools/json-schema-ref-parser": "^12.0.1",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "acorn": "^8.14.1",
+    "isolated-vm": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.7.3",
+    "vitest": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "atlassian",
+    "jira",
+    "confluence",
+    "mcp",
+    "code-mode",
+    "claude-code"
+  ]
+}
