@@ -125,7 +125,7 @@ All methods automatically handle ADF (Atlassian Document Format) conversion — 
 - **V8 isolate sandboxing** via `isolated-vm` — code runs in a disposable isolate with a 128MB memory limit and 30-second timeout
 - **Credentials never enter the sandbox** — authentication headers are injected by the host process
 - **Write confirmation flow** — destructive operations require explicit user confirmation (disable with `AUTO_CONFIRM=true`)
-- Falls back to Node.js `vm` module if `isolated-vm` is unavailable
+- `isolated-vm` is an **optional dependency** — if it can't compile (e.g. missing build tools or incompatible Node version), the server falls back to Node.js `vm` module automatically
 
 ## Project Structure
 
