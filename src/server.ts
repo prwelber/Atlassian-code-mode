@@ -18,7 +18,7 @@ import type {
 } from './types.js';
 import { loadSpecs, type SpecData } from './spec/loader.js';
 import { createExecutor } from './sandbox/executor.js';
-import { SearchExecutor, NodeVMExecutor } from './sandbox/executor.js';
+import { SearchExecutor } from './sandbox/executor.js';
 import { createJiraSdk } from './sdk/jira.js';
 import { createConfluenceSdk } from './sdk/confluence.js';
 import { truncateResponse, estimateTokens } from './utils/truncate.js';
@@ -43,10 +43,10 @@ export async function createServer(config: ServerConfig): Promise<McpServer> {
 
   // --- Create executor ---
   const executor = await createExecutor();
-  const searchExecutor = new SearchExecutor(
-    executor instanceof NodeVMExecutor ? new NodeVMExecutor() : executor,
-    { jira: specs.jira, confluence: specs.confluence }
-  );
+  const searchExecutor = new SearchExecutor({
+    jira: specs.jira,
+    confluence: specs.confluence,
+  });
 
   // --- Create SDKs ---
   const jiraSdk = createJiraSdk(config.jira);

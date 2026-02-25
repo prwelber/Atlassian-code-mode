@@ -14,6 +14,13 @@ import { normalizeCode } from '../utils/normalize-code.js';
 
 /**
  * isolated-vm based executor. Preferred for security.
+ *
+ * Key pattern: async tool calls cross the isolate boundary via
+ * `Reference.applySyncPromise()`. ivm.Callback can only return
+ * synchronous values — Promises cannot be cloned across isolates.
+ * applySyncPromise blocks the isolate's thread while the host
+ * resolves the promise, which is safe because each execution gets
+ * its own disposable isolate.
  */
 export class IsolatedVMExecutor implements Executor {
   private ivm: typeof import('isolated-vm') | null = null;
@@ -41,7 +48,7 @@ export class IsolatedVMExecutor implements Executor {
     const logs: string[] = [];
 
     try {
-      // Set up log capture
+      // Set up log capture — synchronous callback is fine here
       await jail.set(
         '__pushLog',
         new ivm.Callback((msg: string) => {
@@ -49,33 +56,39 @@ export class IsolatedVMExecutor implements Executor {
         })
       );
 
-      // Set up tool call bridge — each function is callable from inside the isolate
-      const fnNames = Object.keys(fns);
-      await jail.set(
-        '__callTool',
-        new ivm.Callback(
-          async (name: string, argsJson: string): Promise<string> => {
-            const fn = fns[name];
-            if (!fn) return JSON.stringify({ error: `Tool "${name}" not found` });
-            try {
-              const args = argsJson ? JSON.parse(argsJson) : {};
-              const result = await fn(args);
-              return JSON.stringify({ result });
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              return JSON.stringify({ error: msg });
-            }
-          }
-        )
-      );
+      // Set up async tool call bridge using Reference + applySyncPromise.
+      // This is the correct pattern for isolated-vm: the Reference is
+      // callable from inside the isolate, and applySyncPromise blocks
+      // the isolate thread while the host resolves the async function.
+      const callToolFn = async (name: string, argsJson: string): Promise<string> => {
+        const fn = fns[name];
+        if (!fn) return JSON.stringify({ error: `Tool "${name}" not found` });
+        try {
+          const args = argsJson ? JSON.parse(argsJson) : {};
+          const result = await fn(args);
+          return JSON.stringify({ result });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return JSON.stringify({ error: msg });
+        }
+      };
 
-      // Build the bootstrap script that sets up the sandbox environment
+      await jail.set('__callToolRef', new ivm.Reference(callToolFn));
+
+      // Bootstrap: set up console, the async __callTool bridge, and the
+      // atlassian proxy object
       const bootstrap = `
         const console = {
           log: (...args) => __pushLog(args.map(String).join(' ')),
           warn: (...args) => __pushLog('[warn] ' + args.map(String).join(' ')),
           error: (...args) => __pushLog('[error] ' + args.map(String).join(' ')),
         };
+
+        // Bridge: call host function via Reference.applySyncPromise
+        // This blocks the isolate thread while the host resolves the promise.
+        function __callTool(name, argsJson) {
+          return __callToolRef.applySyncPromise(undefined, [name, argsJson]);
+        }
 
         // Build the atlassian proxy that routes calls to the host
         function buildProxy(prefix) {
@@ -94,9 +107,6 @@ export class IsolatedVMExecutor implements Executor {
           jira: buildProxy('jira'),
           confluence: buildProxy('confluence'),
         };
-
-        // For search tool — spec is injected separately
-        // (spec.jira and spec.confluence will be set if this is a search execution)
       `;
 
       await context.eval(bootstrap);
@@ -117,7 +127,10 @@ export class IsolatedVMExecutor implements Executor {
         })()`
       );
 
-      const resultJson = await script.run(context, { timeout: 30000 }) as string;
+      const resultJson = (await script.run(context, {
+        timeout: 30000,
+        promise: true,
+      })) as string;
       const parsed = JSON.parse(resultJson);
 
       if (parsed.error) {
@@ -211,16 +224,13 @@ export class NodeVMExecutor implements Executor {
 
 /**
  * Search-specific executor that injects spec data into the sandbox context.
+ * Uses its own isolate with the spec embedded directly — no network access needed.
  */
-export class SearchExecutor implements Executor {
-  private inner: Executor;
+export class SearchExecutor {
   private specData: { jira: unknown; confluence: unknown };
+  private ivm: typeof import('isolated-vm') | null = null;
 
-  constructor(
-    inner: Executor,
-    specData: { jira: unknown; confluence: unknown }
-  ) {
-    this.inner = inner;
+  constructor(specData: { jira: unknown; confluence: unknown }) {
     this.specData = specData;
   }
 
@@ -228,24 +238,80 @@ export class SearchExecutor implements Executor {
     code: string,
     _fns: Record<string, (...args: unknown[]) => Promise<unknown>>
   ): Promise<ExecuteResult> {
-    // For search, we don't need tool functions — just spec access.
-    // We pass spec access via a synthetic tool function.
-    const fns: Record<string, (...args: unknown[]) => Promise<unknown>> = {
-      '__getSpec': async () => this.specData,
-    };
-
-    // Wrap the code to inject spec before execution
-    const wrappedCode = `async () => {
-      const spec = await __callTool('__getSpec', '{}').then(r => JSON.parse(r).result);
-      return await (${normalizeCode(code)})();
-    }`;
-
-    // For the NodeVM executor, we need a different approach
-    if (this.inner instanceof NodeVMExecutor) {
-      return this.executeWithNodeVM(code);
+    // Try isolated-vm first, fall back to Node VM
+    if (!this.ivm) {
+      try {
+        this.ivm = await import('isolated-vm');
+      } catch {
+        return this.executeWithNodeVM(code);
+      }
     }
+    return this.executeWithIsolatedVM(code);
+  }
 
-    return this.inner.execute(wrappedCode, fns);
+  private async executeWithIsolatedVM(code: string): Promise<ExecuteResult> {
+    const ivm = this.ivm!;
+    const isolate = new ivm.Isolate({ memoryLimit: 256 });
+    const context = await isolate.createContext();
+    const jail = context.global;
+    const logs: string[] = [];
+
+    try {
+      await jail.set(
+        '__pushLog',
+        new ivm.Callback((msg: string) => {
+          logs.push(msg);
+        })
+      );
+
+      // Inject spec data as a JSON string, parse inside the isolate.
+      // This avoids the "cannot clone" issue with complex objects.
+      const specJson = JSON.stringify(this.specData);
+      await jail.set('__specJson', specJson);
+
+      const bootstrap = `
+        const spec = JSON.parse(__specJson);
+        delete globalThis.__specJson;
+
+        const console = {
+          log: (...args) => __pushLog(args.map(String).join(' ')),
+          warn: (...args) => __pushLog('[warn] ' + args.map(String).join(' ')),
+          error: (...args) => __pushLog('[error] ' + args.map(String).join(' ')),
+        };
+      `;
+
+      await context.eval(bootstrap);
+
+      const normalized = normalizeCode(code);
+      const script = await isolate.compileScript(
+        `(async () => {
+          try {
+            const __fn = (${normalized});
+            const result = await __fn();
+            return JSON.stringify({ result });
+          } catch (err) {
+            return JSON.stringify({ error: err.message || String(err) });
+          }
+        })()`
+      );
+
+      const resultJson = (await script.run(context, {
+        timeout: 30000,
+        promise: true,
+      })) as string;
+      const parsed = JSON.parse(resultJson);
+
+      if (parsed.error) {
+        return { result: undefined, error: parsed.error, logs };
+      }
+
+      return { result: parsed.result, logs };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { result: undefined, error: msg, logs };
+    } finally {
+      isolate.dispose();
+    }
   }
 
   private async executeWithNodeVM(code: string): Promise<ExecuteResult> {
