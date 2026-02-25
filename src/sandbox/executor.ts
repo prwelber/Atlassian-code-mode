@@ -11,6 +11,12 @@
 
 import type { Executor, ExecuteResult } from '../types.js';
 import { normalizeCode } from '../utils/normalize-code.js';
+import {
+  SANDBOX_HELPERS_SOURCE,
+  select as selectHelper,
+  limitFields as limitFieldsHelper,
+  estimateSize as estimateSizeHelper,
+} from '../utils/response-helpers.js';
 
 /**
  * isolated-vm based executor. Preferred for security.
@@ -83,6 +89,9 @@ export class IsolatedVMExecutor implements Executor {
           warn: (...args) => __pushLog('[warn] ' + args.map(String).join(' ')),
           error: (...args) => __pushLog('[error] ' + args.map(String).join(' ')),
         };
+
+        // Response-size helpers: select(), limitFields(), estimateSize()
+        ${SANDBOX_HELPERS_SOURCE}
 
         // Bridge: call host function via Reference.applySyncPromise
         // This blocks the isolate thread while the host resolves the promise.
@@ -188,6 +197,10 @@ export class NodeVMExecutor implements Executor {
         error: (...args: unknown[]) =>
           logs.push('[error] ' + args.map(String).join(' ')),
       },
+      // Response-size helpers
+      select: selectHelper,
+      limitFields: limitFieldsHelper,
+      estimateSize: estimateSizeHelper,
       JSON,
       Promise,
       Array,
@@ -367,7 +380,19 @@ export async function createExecutor(): Promise<Executor> {
     return executor;
   } catch {
     console.error(
-      '[atlassian-codemode] isolated-vm not available, falling back to Node VM (NOT SECURE for production)'
+      '[atlassian-codemode] WARNING: isolated-vm not available.\n' +
+      '  Falling back to Node.js vm module — this is NOT a security sandbox.\n' +
+      '  Sandboxed code can access the host process in this mode.\n' +
+      '\n' +
+      '  To fix, install isolated-vm:\n' +
+      '    npm install isolated-vm\n' +
+      '\n' +
+      '  Common issues:\n' +
+      '    - Missing C++ build tools: install build-essential (Linux), Xcode CLI (macOS), or windows-build-tools (Windows)\n' +
+      '    - Incompatible Node.js: isolated-vm requires Node.js 18+ with matching ABI\n' +
+      '    - Alpine Linux: apk add python3 make g++\n' +
+      '\n' +
+      '  For production use, isolated-vm is strongly recommended.'
     );
     return new NodeVMExecutor();
   }

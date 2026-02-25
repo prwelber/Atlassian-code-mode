@@ -6,68 +6,165 @@
  */
 
 import type { AtlassianConfig, AtlassianRequestOptions } from '../types.js';
-import { createRequestFn } from './request.js';
+import { createRequestFn, createRawRequestFn } from './request.js';
 import { adfToText, textToAdf } from '../utils/adf.js';
 
 export function createJiraSdk(config: AtlassianConfig) {
   const request = createRequestFn(config);
+  const rawRequest = createRawRequestFn(config);
 
   async function jiraRequest(opts: AtlassianRequestOptions): Promise<unknown> {
     return request(opts);
   }
 
-  async function jql(
+  /**
+   * Convert ADF fields to plain text in-place on an array of issues.
+   */
+  function convertAdfFields(
+    issues: Array<{ key: string; fields: Record<string, unknown> }>
+  ): void {
+    for (const issue of issues) {
+      if (
+        issue.fields?.description &&
+        typeof issue.fields.description === 'object'
+      ) {
+        issue.fields.description = adfToText(issue.fields.description);
+      }
+      if (issue.fields?.comment && typeof issue.fields.comment === 'object') {
+        const commentField = issue.fields.comment as {
+          comments?: Array<{ body?: unknown; author?: { displayName?: string } }>;
+        };
+        if (commentField.comments) {
+          issue.fields.comment = commentField.comments.map((c) => ({
+            author: c.author?.displayName,
+            body: typeof c.body === 'object' ? adfToText(c.body) : c.body,
+          }));
+        }
+      }
+    }
+  }
+
+  /**
+   * Paginated JQL search using the newer /rest/api/3/search/jql endpoint
+   * with cursor-based (nextPageToken) pagination.
+   */
+  async function jqlV2(
     query: string,
     fields?: string[],
     maxResults: number = 50
   ): Promise<{ issues: Array<{ key: string; fields: Record<string, unknown> }>; total: number }> {
     const pageSize = Math.min(maxResults, 100);
-    let startAt = 0;
     const allIssues: Array<{ key: string; fields: Record<string, unknown> }> = [];
     let total = 0;
+    let nextPageToken: string | undefined;
 
     while (allIssues.length < maxResults) {
+      const queryParams: Record<string, string | undefined> = {
+        jql: query,
+        fields: fields?.join(','),
+        maxResults: String(pageSize),
+      };
+      if (nextPageToken) {
+        queryParams.nextPageToken = nextPageToken;
+      }
+
       const result = (await request({
+        method: 'GET',
+        path: '/rest/api/3/search/jql',
+        query: queryParams,
+      })) as {
+        issues: Array<{ key: string; fields: Record<string, unknown> }>;
+        total: number;
+        nextPageToken?: string;
+      };
+
+      total = result.total;
+      convertAdfFields(result.issues);
+      allIssues.push(...result.issues);
+
+      if (!result.nextPageToken || allIssues.length >= total) break;
+      nextPageToken = result.nextPageToken;
+    }
+
+    return { issues: allIssues.slice(0, maxResults), total };
+  }
+
+  /**
+   * Auto-paginated JQL search with automatic fallback.
+   *
+   * Tries /rest/api/3/search first. If the server returns HTTP 410 (Gone),
+   * transparently retries with /rest/api/3/search/jql (cursor-based pagination).
+   */
+  async function jql(
+    query: string,
+    fields?: string[],
+    maxResults: number = 50
+  ): Promise<{ issues: Array<{ key: string; fields: Record<string, unknown> }>; total: number }> {
+    // Try the legacy endpoint first
+    try {
+      const response = await rawRequest({
         method: 'GET',
         path: '/rest/api/3/search',
         query: {
           jql: query,
           fields: fields?.join(','),
-          startAt: String(startAt),
-          maxResults: String(pageSize),
+          startAt: '0',
+          maxResults: String(Math.min(maxResults, 100)),
         },
-      })) as { issues: Array<{ key: string; fields: Record<string, unknown> }>; total: number };
+      });
 
-      total = result.total;
-
-      // Auto-convert ADF descriptions to plain text
-      for (const issue of result.issues) {
-        if (
-          issue.fields?.description &&
-          typeof issue.fields.description === 'object'
-        ) {
-          issue.fields.description = adfToText(issue.fields.description);
-        }
-        // Also convert comments if present
-        if (issue.fields?.comment && typeof issue.fields.comment === 'object') {
-          const commentField = issue.fields.comment as {
-            comments?: Array<{ body?: unknown; author?: { displayName?: string } }>;
-          };
-          if (commentField.comments) {
-            issue.fields.comment = commentField.comments.map((c) => ({
-              author: c.author?.displayName,
-              body: typeof c.body === 'object' ? adfToText(c.body) : c.body,
-            }));
-          }
-        }
+      if (response.status === 410) {
+        // Endpoint deprecated — fall through to v2
+        return jqlV2(query, fields, maxResults);
       }
 
-      allIssues.push(...result.issues);
-      if (allIssues.length >= total) break;
-      startAt += pageSize;
-    }
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(
+          `Atlassian API error ${response.status}: ${text.slice(0, 500)}`
+        );
+      }
 
-    return { issues: allIssues.slice(0, maxResults), total };
+      // Legacy endpoint works — continue with offset-based pagination
+      const firstPage = (await response.json()) as {
+        issues: Array<{ key: string; fields: Record<string, unknown> }>;
+        total: number;
+      };
+
+      const pageSize = Math.min(maxResults, 100);
+      let total = firstPage.total;
+      convertAdfFields(firstPage.issues);
+      const allIssues = [...firstPage.issues];
+      let startAt = pageSize;
+
+      while (allIssues.length < maxResults && allIssues.length < total) {
+        const result = (await request({
+          method: 'GET',
+          path: '/rest/api/3/search',
+          query: {
+            jql: query,
+            fields: fields?.join(','),
+            startAt: String(startAt),
+            maxResults: String(pageSize),
+          },
+        })) as { issues: Array<{ key: string; fields: Record<string, unknown> }>; total: number };
+
+        total = result.total;
+        convertAdfFields(result.issues);
+        allIssues.push(...result.issues);
+        startAt += pageSize;
+      }
+
+      return { issues: allIssues.slice(0, maxResults), total };
+    } catch (err) {
+      // If the error is from our own 410 handling above, it already fell through.
+      // For unexpected network errors on the first request, try v2 as a fallback.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('410')) {
+        return jqlV2(query, fields, maxResults);
+      }
+      throw err;
+    }
   }
 
   async function getIssue(
@@ -187,6 +284,7 @@ export function createJiraSdk(config: AtlassianConfig) {
   return {
     request: jiraRequest,
     jql,
+    jqlV2,
     getIssue,
     getTransitions,
     transition,
