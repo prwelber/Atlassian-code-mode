@@ -66,7 +66,7 @@ Add to your Codex MCP config (`codex.json` or equivalent):
   "mcpServers": {
     "atlassian-codemode": {
       "command": "npx",
-      "args": ["-y", "@carrot/atlassian-codemode"],
+      "args": ["-y", "@prwelber/atlassian-codemode"],
       "env": {
         "ATLASSIAN_URL": "https://your-company.atlassian.net",
         "ATLASSIAN_EMAIL": "you@company.com",
@@ -88,7 +88,25 @@ Add to your Codex MCP config (`codex.json` or equivalent):
 
 ## Usage with Claude Code
 
-Add this server to your MCP configuration, then interact naturally:
+Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "atlassian-codemode": {
+      "command": "npx",
+      "args": ["-y", "@prwelber/atlassian-codemode"],
+      "env": {
+        "ATLASSIAN_URL": "https://your-company.atlassian.net",
+        "ATLASSIAN_EMAIL": "you@company.com",
+        "ATLASSIAN_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
+```
+
+Then interact naturally:
 
 **Discover endpoints:**
 > "Find the endpoint for transitioning a Jira issue"
