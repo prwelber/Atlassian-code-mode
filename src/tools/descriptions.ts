@@ -40,6 +40,7 @@ declare const atlassian: {
   jira: {
     request(opts: AtlassianRequestOptions): Promise<unknown>;
     jql(query: string, fields?: string[], maxResults?: number): Promise<{ issues: Array<{ key: string; fields: Record<string, unknown> }>; total: number }>;
+    jqlV2(query: string, fields?: string[], maxResults?: number): Promise<{ issues: Array<{ key: string; fields: Record<string, unknown> }>; total: number }>;
     getIssue(key: string, fields?: string[]): Promise<unknown>;
     getTransitions(key: string): Promise<Array<{ id: string; name: string }>>;
     transition(key: string, transitionId: string, fields?: unknown): Promise<void>;
@@ -118,6 +119,15 @@ export function buildExecuteDescription(): string {
 Available in your code:
 ${ATLASSIAN_TYPES}
 
+Response-size helpers (use these to avoid truncation):
+- select(items, ['key', 'fields.summary', 'fields.status.name']) — pick dot-paths from each item
+- limitFields(items, ['key', 'summary']) — pick top-level keys from each item
+- estimateSize(value) — returns { tokens, chars } estimate before returning
+
+jql() vs jqlV2():
+- jql() tries /rest/api/3/search first, auto-falls back to /search/jql on HTTP 410
+- jqlV2() uses /rest/api/3/search/jql directly (cursor-based pagination via nextPageToken)
+
 Your code must be an async arrow function that returns the result.
 Do NOT use TypeScript syntax — no type annotations, interfaces, or generics.
 Do NOT define named functions then call them — just write the arrow function body directly.
@@ -129,6 +139,6 @@ async () => {
     ['summary', 'status', 'assignee'],
     10
   );
-  return bugs.issues.map(i => ({ key: i.key, summary: i.fields.summary }));
+  return select(bugs.issues, ['key', 'fields.summary', 'fields.status.name']);
 }`;
 }

@@ -23,7 +23,7 @@ export function truncateResponse(content: unknown): string {
   const truncated = text.slice(0, MAX_CHARS);
   const estimatedTokens = Math.ceil(text.length / CHARS_PER_TOKEN);
 
-  return `${truncated}\n\n--- TRUNCATED ---\nResponse was ~${estimatedTokens.toLocaleString()} tokens (limit: ${MAX_TOKENS.toLocaleString()}). Refine your code to return less data (select fewer fields, reduce maxResults, or filter in code).`;
+  return `${truncated}\n\n--- TRUNCATED ---\nResponse was ~${estimatedTokens.toLocaleString()} tokens (limit: ${MAX_TOKENS.toLocaleString()}). Use these helpers to reduce size:\n  select(items, ['key', 'fields.summary']) — pick only needed dot-paths\n  limitFields(items, ['key', 'title']) — pick top-level keys\n  estimateSize(value) — check { tokens, chars } before returning\nOr reduce maxResults, request fewer fields, or filter in code.`;
 }
 
 export function estimateTokens(text: string): number {

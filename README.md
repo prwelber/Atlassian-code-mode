@@ -57,6 +57,35 @@ Downloads and processes Jira & Confluence OpenAPI specs so the `search` tool can
 npm run process-specs
 ```
 
+## Usage with Codex
+
+Add to your Codex MCP config (`codex.json` or equivalent):
+
+```json
+{
+  "mcpServers": {
+    "atlassian-codemode": {
+      "command": "npx",
+      "args": ["-y", "@carrot/atlassian-codemode"],
+      "env": {
+        "ATLASSIAN_URL": "https://your-company.atlassian.net",
+        "ATLASSIAN_EMAIL": "you@company.com",
+        "ATLASSIAN_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
+```
+
+**Migrating from JIRA_\* env vars?** Map them like this:
+
+| Old variable | New variable |
+|---|---|
+| `JIRA_URL` / `JIRA_BASE_URL` | `ATLASSIAN_URL` |
+| `JIRA_EMAIL` / `JIRA_USER_EMAIL` | `ATLASSIAN_EMAIL` |
+| `JIRA_API_TOKEN` / `JIRA_TOKEN` | `ATLASSIAN_API_TOKEN` |
+| *(OAuth / PAT)* | `ATLASSIAN_BEARER_TOKEN` |
+
 ## Usage with Claude Code
 
 Add this server to your MCP configuration, then interact naturally:
@@ -95,7 +124,8 @@ Only the filtered result enters your context — not the full API response.
 
 | Method | Description |
 |--------|-------------|
-| `jira.jql(query, fields?, maxResults?)` | Auto-paginated JQL search |
+| `jira.jql(query, fields?, maxResults?)` | Auto-paginated JQL search (falls back to `/search/jql` on HTTP 410) |
+| `jira.jqlV2(query, fields?, maxResults?)` | JQL search using `/search/jql` endpoint (cursor-based pagination) |
 | `jira.getIssue(key, fields?)` | Fetch a single issue |
 | `jira.createIssue(project, type, fields)` | Create an issue |
 | `jira.updateIssue(key, fields)` | Update an issue |
@@ -120,12 +150,37 @@ Only the filtered result enters your context — not the full API response.
 
 All methods automatically handle ADF (Atlassian Document Format) conversion — descriptions and page bodies are returned as plain text and accepted as plain text.
 
+### Response Helpers
+
+These functions are available in sandbox code to keep responses under the 6,000-token limit:
+
+| Helper | Description |
+|--------|-------------|
+| `select(items, ['key', 'fields.summary'])` | Pick dot-paths from each item in an array |
+| `limitFields(items, ['key', 'title'])` | Pick top-level keys from each item |
+| `estimateSize(value)` | Returns `{ tokens, chars }` — check before returning |
+
+```javascript
+async () => {
+  const result = await atlassian.jira.jql('project = PROJ', ['summary', 'status'], 50);
+  // Check size before returning
+  if (estimateSize(result).tokens > 3000) {
+    return select(result.issues, ['key', 'fields.summary', 'fields.status.name']);
+  }
+  return result;
+}
+```
+
 ## Security
 
 - **V8 isolate sandboxing** via `isolated-vm` — code runs in a disposable isolate with a 128MB memory limit and 30-second timeout
 - **Credentials never enter the sandbox** — authentication headers are injected by the host process
 - **Write confirmation flow** — destructive operations require explicit user confirmation (disable with `AUTO_CONFIRM=true`)
-- `isolated-vm` is an **optional dependency** — if it can't compile (e.g. missing build tools or incompatible Node version), the server falls back to Node.js `vm` module automatically
+- `isolated-vm` is an **optional dependency** — if it can't compile, the server falls back to Node.js `vm` module with a detailed warning. To install it:
+  - **Linux:** `sudo apt install build-essential && npm install isolated-vm`
+  - **macOS:** `xcode-select --install && npm install isolated-vm`
+  - **Alpine:** `apk add python3 make g++ && npm install isolated-vm`
+  - The `vm` fallback works for development but is **not a security boundary** — use `isolated-vm` in production
 
 ## Project Structure
 

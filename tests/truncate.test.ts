@@ -16,7 +16,7 @@ describe('truncateResponse', () => {
     const longString = 'x'.repeat(30000);
     const result = truncateResponse(longString);
     expect(result).toContain('--- TRUNCATED ---');
-    expect(result).toContain('Refine your code');
+    expect(result).toContain('reduce size');
     expect(result.length).toBeLessThan(longString.length);
   });
 

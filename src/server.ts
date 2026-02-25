@@ -65,6 +65,10 @@ export async function createServer(config: ServerConfig): Promise<McpServer> {
         const a = args as [string, string[]?, number?];
         return jiraSdk.jql(a[0], a[1], a[2]);
       },
+      'jira.jqlV2': async (args: unknown) => {
+        const a = args as [string, string[]?, number?];
+        return jiraSdk.jqlV2(a[0], a[1], a[2]);
+      },
       'jira.getIssue': async (args: unknown) => {
         const a = args as [string, string[]?];
         return jiraSdk.getIssue(a[0], a[1]);
